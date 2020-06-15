@@ -208,7 +208,7 @@ object sparkcode {
    
 } 
      
-   // Findind Score
+   // FindinG Score
       edge.mapPartitions{x=>
       val lis = x.toList
       for(i<-0 until lis.length){
