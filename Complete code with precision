@@ -1,0 +1,252 @@
+package samplecode
+import org.apache.spark._
+import org.apache.spark.graphx.lib._
+import org.apache.spark.graphx._
+import org.apache.spark.rdd.RDD
+import scala.util.Random
+import scala.math._
+import scala.io.Source
+import scala.util.control.Breaks._
+import shapeless._0
+import breeze.math.MutablizingAdaptor.Lambda2
+
+import breeze.linalg.split
+import shapeless.ops.nat.ToInt
+import scala.xml.persistent.Index
+import scala.reflect.internal.Trees
+import rationals.properties.isEmpty
+
+object mainC {
+
+  
+  //Initialize spark context
+    val sparkConf = new SparkConf().setAppName("app1").setMaster("local[*]")
+    val sc = new SparkContext(sparkConf)
+    
+    //make RDDs for logical graph from dataset
+    val edge : RDD[Edge[(Int,Int)]] = sc.textFile("graph dataset").map{x=> val a= x.split(",")
+    Edge(a(1).toLong,a(3).toLong,(a(0).toInt,a(2).toInt))}
+
+   //make RDDs for probe edges from dataset
+   val probe_edges : RDD[Edge[(Int,Int)]] = sc.textFile("graphdataset").map{x=> val a= x.split(",")
+    Edge(a(1).toLong,a(3).toLong,(a(0).toInt,a(2).toInt))}
+    
+   
+  
+    //creating graph
+    val defaultuser =("user", "missing")
+   val graph = Graph.fromEdges(edge,defaultuser)
+   val outdegree = graph.outDegrees
+   val _degree = outdegree.collect().sortBy(x => x._1)
+
+    //initialize variables
+    val vertices=graph.numVertices.toInt
+    var visibility1 = Array.ofDim[Double](vertices,vertices)
+    var link_pheromone1 = Array.ofDim[Double](vertices,vertices)
+     var  weight1 = Array.ofDim[Double](vertices,vertices)
+   var quntum_pheromone=Array.ofDim[Double](_degree.length)
+   quntum_pheromone = quntum_pheromone.map(x=>0.7071068)
+   var score : List[(Int,Int,Double)]=List()
+   
+  def main(args: Array[String])
+  {
+    
+    // Setting link pheromone  
+    for(i<-0 until vertices)
+    {
+          for(j<-0 until vertices)
+    {  
+     if(!edge.filter(e=> e.srcId == i.toLong && e.dstId==j.toLong).isEmpty()){
+      
+     if(!probe_edges.filter(e=> e.srcId == i.toLong && e.dstId==j.toLong).isEmpty()){
+      link_pheromone1(i)(j)=2.0
+
+     }  
+    else 
+   {
+      link_pheromone1(i)(j)=1.0
+        
+   } 
+     val specificedge = edge.filter(e => e.srcId==i.toLong && e.dstId==j.toLong).first()
+     val weight  = specificedge.attr._2
+     weight1(i)(j)=weight
+      val degreeofnode = outdegree.filter(e => e._1==i).first()._2
+     visibility1(i)(j)= degreeofnode.toDouble/ weight.toDouble 
+       
+    }
+else
+{
+    link_pheromone1(i)(j)=0.0
+    visibility1(i)(j)=0.0
+      weight1(i)(j)=0.0
+    }
+     }
+    }
+    
+    
+  //find neighbours_rdd
+   val neighbours = graph.collectNeighbors(EdgeDirection.Out).sortBy(x => x._1)
+    val Nc = 2
+    var i = 1
+    
+
+    while(i<=Nc)
+    {
+
+      neighbours.mapPartitions{x=>
+      val nodes_list = x.toList
+     var random = new Random()
+      var source_node = nodes_list.apply(random.nextInt(nodes_list.length))
+       var path : List[Int] = List()
+       val path_length = 20
+       var totaloutdegree= 0
+       path = path:+ source_node._1.toInt
+      
+         for(j<- 0 to path_length-1){
+              
+    //find probability     
+      var probabilityofnode : List[(Double,Int)]=List()
+      var denominator1 =0.0
+      source_node._2.map{x=>
+        
+      denominator1 = denominator1 + (quntum_pheromone(x._1.toInt - 1) * 
+                     link_pheromone1(source_node._1.toInt)(x._1.toInt) * 
+                     visibility1(source_node._1.toInt)(x._1.toInt) ) 
+      }
+    
+    source_node._2.map{ x=>
+      
+    val  probability = (quntum_pheromone(x._1.toInt - 1) * 
+                       link_pheromone1(source_node._1.toInt)(x._1.toInt) * 
+                       visibility1(source_node._1.toInt)(x._1.toInt)) / denominator1
+    probabilityofnode=probabilityofnode:+((probability,x._1.toInt)) 
+      }
+
+    var nextnode =(0.0,-1)
+    nextnode = probabilityofnode(0)
+    
+    // find path
+    for(j<-0 until probabilityofnode.length)
+    {
+        if(path.contains(nextnode._2))
+             {
+               nextnode = probabilityofnode(j)
+              
+             }
+        else {
+               if(!path.contains(probabilityofnode(j)._2)){
+               if(probabilityofnode(j)._1> nextnode._1){
+              nextnode= probabilityofnode(j)
+              }
+             }
+             }
+           
+           }
+             
+      val s = nodes_list.filter(x=>x._1==nextnode._2)
+      
+        if(!s.isEmpty){
+              path= path:+ nextnode._2
+              source_node = nodes_list.filter(v => v._1 == nextnode._2).toBuffer(0)
+              }
+     
+         }
+      
+      // link pheromone updation
+      if(path.length>1){
+     var totalpathweight=0.0
+     var divider=0.0
+     for(i<-0 until path.length-1){
+       totalpathweight = totalpathweight+ weight1(path(i))(path(i+1))
+     }
+       divider = 1/totalpathweight
+       
+      for(i<-0 until path.length-1)
+      {
+       val new_pheromone= 0.9*link_pheromone1(path(i))(path(i+1))+ divider
+       link_pheromone1(path(i))(path(i+1)) = new_pheromone
+      } 
+       
+      }
+      
+       // quantum pheromone updation
+      if(path.length>1){
+       for(i <- 0 to path.length-1)
+   {
+     var theta = 0.0
+   
+       var alpha = quntum_pheromone(path(i))
+       var beta = sqrt(1 - pow(alpha,2))
+       
+       var rand = new Random()
+       var delta_theta = ((1 + rand.nextInt(8)).toFloat/100.toFloat)*3.1428571
+
+    
+       if((alpha*beta)>0)
+       {
+          theta = delta_theta * 1
+       }
+       else if((alpha*beta)<0)
+       {
+          theta = delta_theta * -1
+       }
+       else if((alpha*beta)==0)
+       {
+          theta = 0
+       }
+       
+       alpha = (cos(theta) * alpha) - (sin(theta) * beta)
+       beta  = (sin(theta) * alpha) + (cos(theta) * beta)
+       
+       if(alpha>=beta)
+       {
+         quntum_pheromone(path(i)) = alpha
+   
+       }
+       else
+       {
+         quntum_pheromone(path(i)) = beta
+    
+       }
+     
+   }
+      }
+   val l = Iterator(path.length)
+      
+       l}.collect 
+       i=i+1
+  
+    }
+  /*  println("link pheromone")
+        for(i<-0 until vertices)
+    {
+          for(j<-0 until vertices)
+    {  
+            if(link_pheromone1(i)(j)!= 0.0){
+println(link_pheromone1(i)(j))
+    }
+    }
+    }
+
+    println("qp")
+ quntum_pheromone.foreach(println)*/
+ 
+   //finding score
+       edge.mapPartitions{x=>
+         val lis = x.toList
+         for(i<-0 until lis.length){
+           val first = lis(i)
+             val link_value = link_pheromone1(first.srcId.toInt)(first.dstId.toInt)
+               val visi_value = visibility1(first.srcId.toInt)(first.dstId.toInt)
+               score = score:+((first.srcId.toInt,first.dstId.toInt,link_value+visi_value))   
+       }
+        
+      x    }.collect
+      
+   /* println("score")
+    score.foreach(println)*/
+
+  } 
+ 
+  
+}
